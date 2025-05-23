@@ -1,13 +1,22 @@
 const express = require('express');
 const ftp = require('basic-ftp');
 const cors = require('cors');
-const { Readable } = require('stream');
+const fs = require('fs').promises;
+const path = require('path');
+const os = require('os');
 const app = express();
 const port = 3001;
 
 // Разрешаем CORS для Vue приложения
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
+
+// Увеличиваем таймаут
+app.use((req, res, next) => {
+  res.setTimeout(300000); // 5 минут
+  next();
+});
 
 // FTP конфигурация
 const ftpConfig = {
@@ -18,26 +27,13 @@ const ftpConfig = {
   secure: false
 };
 
-// Функция для преобразования потока в строку
-async function streamToString(stream) {
-  const chunks = [];
-  return new Promise((resolve, reject) => {
-    stream.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
-    stream.on('error', (err) => reject(err));
-    stream.on('end', () => resolve(Buffer.concat(chunks).toString('utf-8')));
-  });
-}
-
-// Эндпоинт для получения файлов с FTP
+// Эндпоинт для получения файлов с FTP (исправленный)
 app.post('/api/ftp/download', async (req, res) => {
   const { filePaths } = req.body;
   const client = new ftp.Client();
-  const fs = require('fs').promises;
-  const path = require('path');
-  const os = require('os');
   
-  // Включаем отладку FTP
-  client.ftp.verbose = true;
+  // Настройки таймаута для FTP
+  client.ftp.timeout = 60000; // 60 секунд на операцию
   
   try {
     console.log('Подключение к FTP...');
@@ -62,7 +58,11 @@ app.post('/api/ftp/download', async (req, res) => {
         const content = await fs.readFile(tempPath, 'utf-8');
         
         // Удаляем временный файл
-        await fs.unlink(tempPath);
+        try {
+          await fs.unlink(tempPath);
+        } catch (e) {
+          console.log('Не удалось удалить временный файл:', e.message);
+        }
         
         console.log(`Файл загружен: ${filePath}, размер: ${content.length} символов`);
         results[filePath] = content;
@@ -221,79 +221,56 @@ app.get('/api/ftp/test-download', async (req, res) => {
   }
 });
 
-// Альтернативный эндпоинт с использованием потоков
-app.post('/api/ftp/download-stream', async (req, res) => {
+// Альтернативный эндпоинт с пакетной загрузкой
+app.post('/api/ftp/download-batch', async (req, res) => {
   const { filePaths } = req.body;
-  const client = new ftp.Client();
-  
-  client.ftp.verbose = true;
+  const batchSize = 3; // Загружаем по 3 файла за раз
+  const results = {};
   
   try {
-    console.log('Подключение к FTP (stream метод)...');
-    await client.access(ftpConfig);
-    console.log('Подключение успешно!');
-    
-    const results = {};
-    
-    for (const filePath of filePaths) {
+    // Разбиваем файлы на пакеты
+    for (let i = 0; i < filePaths.length; i += batchSize) {
+      const batch = filePaths.slice(i, i + batchSize);
+      const client = new ftp.Client();
+      client.ftp.timeout = 60000;
+      
       try {
-        console.log(`Загрузка файла через поток: ${filePath}`);
+        await client.access(ftpConfig);
         
-        // Создаем поток для записи
-        const chunks = [];
-        const writable = new Readable({
-          read() {}
-        });
-        
-        // Собираем данные
-        let content = '';
-        writable.on('data', (chunk) => {
-          content += chunk.toString('utf-8');
-        });
-        
-        // Загружаем файл в поток
-        await client.downloadTo(writable, filePath);
-        
-        console.log(`Файл загружен: ${filePath}, размер: ${content.length} символов`);
-        results[filePath] = content;
-        
-      } catch (error) {
-        console.error(`Ошибка загрузки ${filePath}:`, error.message);
-        
-        // Пробуем без начального слеша
-        try {
-          const altPath = filePath.startsWith('/') ? filePath.substring(1) : filePath;
-          console.log(`Пробуем альтернативный путь: ${altPath}`);
-          
-          const chunks = [];
-          const writable = new Readable({
-            read() {}
-          });
-          
-          let content = '';
-          writable.on('data', (chunk) => {
-            content += chunk.toString('utf-8');
-          });
-          
-          await client.downloadTo(writable, altPath);
-          
-          console.log(`Успешно с альтернативным путем!`);
-          results[filePath] = content;
-        } catch (altError) {
-          console.error(`Альтернативный путь тоже не работает:`, altError.message);
-          results[filePath] = null;
+        for (const filePath of batch) {
+          try {
+            const tempDir = os.tmpdir();
+            const tempFileName = `ftp_batch_${Date.now()}_${path.basename(filePath)}`;
+            const tempPath = path.join(tempDir, tempFileName);
+            
+            await client.downloadTo(tempPath, filePath);
+            const content = await fs.readFile(tempPath, 'utf-8');
+            
+            try {
+              await fs.unlink(tempPath);
+            } catch (e) {}
+            
+            results[filePath] = content;
+            console.log(`Загружен: ${filePath}`);
+          } catch (error) {
+            console.error(`Ошибка: ${filePath}:`, error.message);
+            results[filePath] = null;
+          }
         }
+      } finally {
+        client.close();
       }
     }
     
     res.json({ success: true, data: results });
   } catch (error) {
-    console.error('FTP ошибка:', error);
+    console.error('Общая ошибка:', error);
     res.status(500).json({ success: false, error: error.message });
-  } finally {
-    client.close();
   }
 });
+
+// Удаляем старый эндпоинт download-stream и заменяем на batch
+
 
 app.listen(port, () => {
   console.log(`FTP сервер запущен на порту ${port}`);

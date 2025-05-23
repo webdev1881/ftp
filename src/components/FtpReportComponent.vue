@@ -37,11 +37,11 @@
       </button>
       
       <button 
-        @click="testDownload" 
+        @click="loadDataBatch" 
         :disabled="loading"
-        class="test-button"
+        class="batch-button"
       >
-        Тест загрузки
+        Загрузить данные (пакетно)
       </button>
     </div>
 
@@ -57,29 +57,57 @@
     </div>
 
     <!-- Сводная таблица -->
-    <div v-if="!loading && reportData.length > 0" class="report-table">
+    <div v-if="!loading && groupedData.length > 0" class="report-table">
       <table>
         <thead>
           <tr>
-            <th>Город</th>
-            <th>Магазин</th>
+            <th style="width: 30px;"></th>
+            <th>Город / Магазин</th>
             <th>Количество чеков</th>
             <th>Общий оборот</th>
             <th>Средний чек</th>
           </tr>
         </thead>
         <tbody>
-          <tr v-for="row in reportData" :key="row.id">
-            <td>{{ row.city }}</td>
-            <td>{{ row.shopName }}</td>
-            <td>{{ row.receiptCount }}</td>
-            <td>{{ formatCurrency(row.totalRevenue) }}</td>
-            <td>{{ formatCurrency(row.averageReceipt) }}</td>
-          </tr>
+          <template v-for="cityGroup in groupedData">
+            <!-- Строка города с итогами -->
+            <tr 
+              :key="cityGroup.city + '_header'" 
+              class="city-row"
+              @click="toggleCity(cityGroup.city)"
+            >
+              <td class="expand-icon">
+                <span class="toggle-icon">
+                  {{ expandedCities[cityGroup.city] ? '▼' : '▶' }}
+                </span>
+              </td>
+              <td class="city-name">
+                <strong>{{ cityGroup.city }}</strong>
+              </td>
+              <td><strong>{{ cityGroup.totalReceipts }}</strong></td>
+              <td><strong>{{ formatCurrency(cityGroup.totalRevenue) }}</strong></td>
+              <td><strong>{{ formatCurrency(cityGroup.averageReceipt) }}</strong></td>
+            </tr>
+            
+            <!-- Строки магазинов (показываются только если город развернут) -->
+            <tr 
+              v-for="shop in cityGroup.shops" 
+              v-show="expandedCities[cityGroup.city]"
+              :key="shop.id"
+              class="shop-row"
+            >
+              <td></td>
+              <td class="shop-name">{{ shop.shopName }}</td>
+              <td>{{ shop.receiptCount }}</td>
+              <td>{{ formatCurrency(shop.totalRevenue) }}</td>
+              <td>{{ formatCurrency(shop.averageReceipt) }}</td>
+            </tr>
+          </template>
         </tbody>
         <tfoot>
           <tr>
-            <td colspan="2"><strong>Итого:</strong></td>
+            <td></td>
+            <td><strong>Общий итог:</strong></td>
             <td><strong>{{ totalReceipts }}</strong></td>
             <td><strong>{{ formatCurrency(totalRevenue) }}</strong></td>
             <td><strong>{{ formatCurrency(averageTotal) }}</strong></td>
@@ -126,10 +154,36 @@ export default {
         { code: 'kiev', name: 'Киев' },
         { code: 'khar', name: 'Харьков' }
       ],
-      ftpFiles: []
+      ftpFiles: [],
+      expandedCities: {} // для отслеживания развернутых городов
     };
   },
   computed: {
+    groupedData() {
+      const groups = {};
+      
+      // Группируем данные по городам
+      this.reportData.forEach(row => {
+        if (!groups[row.city]) {
+          groups[row.city] = {
+            city: row.city,
+            shops: [],
+            totalReceipts: 0,
+            totalRevenue: 0
+          };
+        }
+        
+        groups[row.city].shops.push(row);
+        groups[row.city].totalReceipts += row.receiptCount;
+        groups[row.city].totalRevenue += row.totalRevenue;
+      });
+      
+      // Преобразуем в массив и вычисляем средний чек
+      return Object.values(groups).map(group => ({
+        ...group,
+        averageReceipt: group.totalReceipts > 0 ? group.totalRevenue / group.totalReceipts : 0
+      })).sort((a, b) => a.city.localeCompare(b.city));
+    },
     totalReceipts() {
       return this.reportData.reduce((sum, row) => sum + row.receiptCount, 0);
     },
@@ -146,6 +200,10 @@ export default {
     this.startDate = '2025-02-21';
   },
   methods: {
+    toggleCity(city) {
+      this.$set(this.expandedCities, city, !this.expandedCities[city]);
+    },
+    
     formatDateForInput(date) {
       return date.toISOString().split('T')[0];
     },
@@ -163,6 +221,86 @@ export default {
       const sizes = ['Bytes', 'KB', 'MB', 'GB'];
       const i = Math.floor(Math.log(bytes) / Math.log(k));
       return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+    },
+    
+    async loadDataBatch() {
+      this.loading = true;
+      this.error = null;
+      this.reportData = [];
+      this.progressPercent = 0;
+      
+      try {
+        const dates = this.getDateRange();
+        const allFilePaths = [];
+        
+        // Собираем все пути к файлам
+        for (const date of dates) {
+          const dateStr = this.formatDateForInput(date);
+          for (const city of this.cities) {
+            allFilePaths.push({
+              city: city,
+              date: dateStr,
+              paths: [
+                `/www/receipt/receipt_${city.code}_${dateStr}.csv`,
+                `/www/cartitem/cartitem_${city.code}_${dateStr}.csv`,
+                `/www/shop_${city.code}_${dateStr}.csv`
+              ]
+            });
+          }
+        }
+        
+        // Загружаем все файлы одним запросом
+        this.progressText = 'Загрузка всех файлов...';
+        const allPaths = allFilePaths.flatMap(item => item.paths);
+        
+        const response = await axios.post('http://localhost:3001/api/ftp/download-batch', {
+          filePaths: allPaths
+        }, {
+          timeout: 600000 // 10 минут
+        });
+        
+        if (response.data.success) {
+          const allData = {
+            receipts: {},
+            cartItems: {},
+            shops: {}
+          };
+          
+          // Обрабатываем результаты
+          for (const item of allFilePaths) {
+            for (const path of item.paths) {
+              const content = response.data.data[path];
+              if (content) {
+                const parsed = Papa.parse(content, {
+                  header: true,
+                  dynamicTyping: true,
+                  skipEmptyLines: true
+                });
+                
+                if (path.includes('receipt')) {
+                  if (!allData.receipts[item.city.code]) allData.receipts[item.city.code] = [];
+                  allData.receipts[item.city.code].push(...parsed.data);
+                } else if (path.includes('cartitem')) {
+                  if (!allData.cartItems[item.city.code]) allData.cartItems[item.city.code] = [];
+                  allData.cartItems[item.city.code].push(...parsed.data);
+                } else if (path.includes('shop')) {
+                  if (!allData.shops[item.city.code]) allData.shops[item.city.code] = [];
+                  allData.shops[item.city.code].push(...parsed.data);
+                }
+              }
+            }
+          }
+          
+          this.progressText = 'Обработка данных...';
+          this.processData(allData);
+        }
+        
+      } catch (error) {
+        console.error('Ошибка загрузки:', error);
+        this.error = 'Ошибка при загрузке данных: ' + error.message;
+      } finally {
+        this.loading = false;
+      }
     },
     
     async testDownload() {
@@ -254,9 +392,11 @@ export default {
             
             console.log(`Загрузка файлов для ${city.name}:`, filePaths);
             
-            // Загружаем файлы - используем альтернативный метод
-            const response = await axios.post('http://localhost:3001/api/ftp/download-stream', {
+            // Загружаем файлы - используем обычный метод с увеличенным таймаутом
+            const response = await axios.post('http://localhost:3001/api/ftp/download', {
               filePaths
+            }, {
+              timeout: 300000 // 5 минут таймаут
             });
             
             if (response.data.success) {
@@ -369,6 +509,9 @@ export default {
         if (a.city !== b.city) return a.city.localeCompare(b.city);
         return a.shopName.localeCompare(b.shopName);
       });
+      
+      // По умолчанию все города свернуты
+      this.expandedCities = {};
     }
   }
 };
@@ -451,6 +594,26 @@ h1 {
 }
 
 .check-button:disabled {
+  background: #ccc;
+  cursor: not-allowed;
+}
+
+.batch-button {
+  background: #6c757d;
+  color: white;
+  border: none;
+  padding: 10px 20px;
+  border-radius: 4px;
+  font-size: 16px;
+  cursor: pointer;
+  transition: background 0.3s;
+}
+
+.batch-button:hover:not(:disabled) {
+  background: #5a6268;
+}
+
+.batch-button:disabled {
   background: #ccc;
   cursor: not-allowed;
 }
@@ -541,6 +704,47 @@ th {
   background: #f8f9fa;
   font-weight: bold;
   color: #333;
+}
+
+.city-row {
+  background: #e8f0fe;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.city-row:hover {
+  background: #d2e3fc;
+}
+
+.city-name {
+  font-weight: bold;
+  color: #1a73e8;
+}
+
+.shop-row {
+  background: #fff;
+}
+
+.shop-row:hover {
+  background: #f8f9fa;
+}
+
+.shop-name {
+  padding-left: 30px !important;
+  color: #5f6368;
+}
+
+.expand-icon {
+  text-align: center;
+  width: 30px;
+  padding: 0 !important;
+}
+
+.toggle-icon {
+  display: inline-block;
+  font-size: 12px;
+  color: #5f6368;
+  user-select: none;
 }
 
 tr:hover {
