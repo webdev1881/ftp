@@ -28,7 +28,7 @@
         {{ loading ? 'Загрузка...' : 'Загрузить данные' }}
       </button>
       
-      <button 
+      <!-- <button 
         @click="checkFiles" 
         :disabled="loading"
         class="check-button"
@@ -42,7 +42,7 @@
         class="batch-button"
       >
         Загрузить данные (пакетно)
-      </button>
+      </button> -->
     </div>
 
     <!-- Прогресс загрузки -->
@@ -82,11 +82,11 @@
                 </span>
               </td>
               <td class="city-name">
-                <strong>{{ cityGroup.city }}</strong>
+                <div>{{ cityGroup.city }}</div>
               </td>
-              <td><strong>{{ cityGroup.totalReceipts }}</strong></td>
-              <td><strong>{{ formatCurrency(cityGroup.totalRevenue) }}</strong></td>
-              <td><strong>{{ formatCurrency(cityGroup.averageReceipt) }}</strong></td>
+              <td><div>{{ cityGroup.totalReceipts }}</div></td>
+              <td><div>{{ formatCurrency(cityGroup.totalRevenue) }}</div></td>
+              <td><div>{{ formatCurrency(cityGroup.averageReceipt) }}</div></td>
             </tr>
             
             <!-- Строки магазинов (показываются только если город развернут) -->
@@ -99,18 +99,18 @@
               <td></td>
               <td class="shop-name">{{ shop.shopName }}</td>
               <td>{{ shop.receiptCount }}</td>
-              <td>{{ formatCurrency(shop.totalRevenue) }}</td>
-              <td>{{ formatCurrency(shop.averageReceipt) }}</td>
+              <!-- <td>{{ formatCurrency(shop.totalRevenue).toFixed(0) }}</td> -->
+              <td>{{ formatCurrency(shop.averageReceipt.toFixed(0)) }}</td>
             </tr>
           </template>
         </tbody>
         <tfoot>
           <tr>
             <td></td>
-            <td><strong>Общий итог:</strong></td>
-            <td><strong>{{ totalReceipts }}</strong></td>
-            <td><strong>{{ formatCurrency(totalRevenue) }}</strong></td>
-            <td><strong>{{ formatCurrency(averageTotal) }}</strong></td>
+            <td><div>Общий итог:</div></td>
+            <td><div>{{ totalReceipts }}</div></td>
+            <td><div>{{ formatCurrency(totalRevenue) }}</div></td>
+            <td><div>{{ formatCurrency(averageTotal) }}</div></td>
           </tr>
         </tfoot>
       </table>
@@ -220,7 +220,7 @@ export default {
       const k = 1024;
       const sizes = ['Bytes', 'KB', 'MB', 'GB'];
       const i = Math.floor(Math.log(bytes) / Math.log(k));
-      return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+      return parseFloat((bytes / Math.pow(k, i)).toFixed(0)) + ' ' + sizes[i];
     },
     
     async loadDataBatch() {
@@ -274,7 +274,16 @@ export default {
                 const parsed = Papa.parse(content, {
                   header: true,
                   dynamicTyping: true,
-                  skipEmptyLines: true
+                  skipEmptyLines: true,
+                  delimiter: '|',  // Указываем разделитель
+                  transformHeader: (header) => header.trim(), // Убираем пробелы из заголовков
+                  transform: (value) => {
+                    // Убираем пробелы
+                    if (typeof value === 'string') {
+                      return value.trim();
+                    }
+                    return value;
+                  }
                 });
                 
                 if (path.includes('receipt')) {
@@ -411,18 +420,35 @@ export default {
                   const parsed = Papa.parse(content, {
                     header: true,
                     dynamicTyping: true,
-                    skipEmptyLines: true
+                    skipEmptyLines: true,
+                    delimiter: '|',  // Указываем разделитель
+                    transformHeader: (header) => header.trim(), // Убираем пробелы из заголовков
+                    transform: (value) => {
+                      // Убираем пробелы
+                      if (typeof value === 'string') {
+                        return value.trim();
+                      }
+                      return value;
+                    }
                   });
                   
                   if (path.includes('receipt')) {
                     if (!allData.receipts[city.code]) allData.receipts[city.code] = [];
                     allData.receipts[city.code].push(...parsed.data);
+                    console.log(`Загружено чеков для ${city.name}:`, parsed.data.length);
                   } else if (path.includes('cartitem')) {
                     if (!allData.cartItems[city.code]) allData.cartItems[city.code] = [];
                     allData.cartItems[city.code].push(...parsed.data);
+                    console.log(`Загружено товаров для ${city.name}:`, parsed.data.length);
+                    // Проверяем первые несколько записей
+                    if (parsed.data.length > 0) {
+                      console.log('Пример товара:', parsed.data[0]);
+                      console.log('total_price тип:', typeof parsed.data[0].total_price);
+                    }
                   } else if (path.includes('shop')) {
                     if (!allData.shops[city.code]) allData.shops[city.code] = [];
                     allData.shops[city.code].push(...parsed.data);
+                    console.log(`Загружено магазинов для ${city.name}:`, parsed.data.length);
                   }
                 } else {
                   console.warn(`Файл не найден: ${path}`);
@@ -482,7 +508,9 @@ export default {
           // Считаем сумму чека
           const receiptItems = itemsByReceipt[receipt.id] || [];
           const receiptTotal = receiptItems.reduce((sum, item) => {
-            return sum + (item.total_price || 0);
+            // Преобразуем total_price в число
+            const price = parseFloat(item.total_price) || 0;
+            return sum + price;
           }, 0);
           
           shopData[shopId].receipts.push(receipt);
@@ -496,9 +524,9 @@ export default {
             city: city.name,
             shopName: data.shopName,
             receiptCount: data.receipts.length,
-            totalRevenue: data.totalRevenue,
+            totalRevenue: Math.round(data.totalRevenue * 100) / 100, // Округляем до копеек
             averageReceipt: data.receipts.length > 0 
-              ? data.totalRevenue / data.receipts.length 
+              ? Math.round((data.totalRevenue / data.receipts.length) * 100) / 100
               : 0
           });
         }
@@ -512,6 +540,14 @@ export default {
       
       // По умолчанию все города свернуты
       this.expandedCities = {};
+      
+      // Выводим отладочную информацию
+      console.log('Обработано записей:', {
+        всего_чеков: Object.values(allData.receipts).flat().length,
+        всего_товаров: Object.values(allData.cartItems).flat().length,
+        всего_магазинов: Object.values(allData.shops).flat().length,
+        записей_в_отчете: this.reportData.length
+      });
     }
   }
 };
@@ -519,248 +555,478 @@ export default {
 
 <style scoped>
 .ftp-report-container {
-  max-width: 1200px;
+  max-width: 1400px;
   margin: 0 auto;
-  padding: 20px;
-  font-family: Arial, sans-serif;
+  padding: 32px 24px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  background: #f8fafc;
+  min-height: 100vh;
 }
 
 h1 {
-  color: #333;
-  margin-bottom: 30px;
+  color: #1e293b;
+  margin-bottom: 40px;
+  font-size: 32px;
+  font-weight: 700;
+  letter-spacing: -0.025em;
 }
 
 .control-panel {
-  background: #f5f5f5;
-  padding: 20px;
-  border-radius: 8px;
-  margin-bottom: 30px;
+  background: linear-gradient(135deg, #ffffff 0%, #f8fafc 100%);
+  padding: 28px 32px;
+  border-radius: 16px;
+  margin-bottom: 32px;
   display: flex;
   align-items: center;
-  gap: 20px;
+  gap: 24px;
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+  border: 1px solid rgba(226, 232, 240, 0.8);
+  flex-wrap: wrap;
 }
 
 .date-selector {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 16px;
+  flex: 1;
+  min-width: 300px;
 }
 
 .date-selector label {
-  font-weight: bold;
-  color: #555;
+  font-weight: 500;
+  color: #64748b;
+  font-size: 14px;
+  white-space: nowrap;
 }
 
 .date-selector input {
-  padding: 8px;
-  border: 1px solid #ddd;
-  border-radius: 4px;
+  padding: 10px 16px;
+  border: 2px solid #e2e8f0;
+  border-radius: 10px;
   font-size: 14px;
+  color: #334155;
+  background: #ffffff;
+  transition: all 0.2s ease;
+  font-weight: 500;
+}
+
+.date-selector input:hover {
+  border-color: #cbd5e1;
+}
+
+.date-selector input:focus {
+  outline: none;
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
 }
 
 .load-button {
-  background: #007bff;
+  background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
   color: white;
   border: none;
-  padding: 10px 20px;
-  border-radius: 4px;
-  font-size: 16px;
+  padding: 12px 28px;
+  border-radius: 10px;
+  font-size: 15px;
+  font-weight: 600;
   cursor: pointer;
-  transition: background 0.3s;
+  transition: all 0.2s ease;
+  box-shadow: 0 4px 6px -1px rgba(59, 130, 246, 0.25), 0 2px 4px -1px rgba(59, 130, 246, 0.15);
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .load-button:hover:not(:disabled) {
-  background: #0056b3;
+  transform: translateY(-1px);
+  box-shadow: 0 10px 15px -3px rgba(59, 130, 246, 0.3), 0 4px 6px -2px rgba(59, 130, 246, 0.2);
+}
+
+.load-button:active:not(:disabled) {
+  transform: translateY(0);
 }
 
 .load-button:disabled {
-  background: #ccc;
+  background: linear-gradient(135deg, #e2e8f0 0%, #cbd5e1 100%);
   cursor: not-allowed;
+  box-shadow: none;
 }
 
 .check-button {
-  background: #28a745;
+  background: linear-gradient(135deg, #10b981 0%, #059669 100%);
   color: white;
   border: none;
-  padding: 10px 20px;
-  border-radius: 4px;
-  font-size: 16px;
+  padding: 12px 28px;
+  border-radius: 10px;
+  font-size: 15px;
+  font-weight: 600;
   cursor: pointer;
-  transition: background 0.3s;
+  transition: all 0.2s ease;
+  box-shadow: 0 4px 6px -1px rgba(16, 185, 129, 0.25), 0 2px 4px -1px rgba(16, 185, 129, 0.15);
 }
 
 .check-button:hover:not(:disabled) {
-  background: #218838;
+  transform: translateY(-1px);
+  box-shadow: 0 10px 15px -3px rgba(16, 185, 129, 0.3), 0 4px 6px -2px rgba(16, 185, 129, 0.2);
 }
 
 .check-button:disabled {
-  background: #ccc;
+  background: linear-gradient(135deg, #e2e8f0 0%, #cbd5e1 100%);
   cursor: not-allowed;
+  box-shadow: none;
 }
 
 .batch-button {
-  background: #6c757d;
+  background: linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%);
   color: white;
   border: none;
-  padding: 10px 20px;
-  border-radius: 4px;
-  font-size: 16px;
+  padding: 12px 28px;
+  border-radius: 10px;
+  font-size: 15px;
+  font-weight: 600;
   cursor: pointer;
-  transition: background 0.3s;
+  transition: all 0.2s ease;
+  box-shadow: 0 4px 6px -1px rgba(139, 92, 246, 0.25), 0 2px 4px -1px rgba(139, 92, 246, 0.15);
 }
 
 .batch-button:hover:not(:disabled) {
-  background: #5a6268;
+  transform: translateY(-1px);
+  box-shadow: 0 10px 15px -3px rgba(139, 92, 246, 0.3), 0 4px 6px -2px rgba(139, 92, 246, 0.2);
 }
 
 .batch-button:disabled {
-  background: #ccc;
+  background: linear-gradient(135deg, #e2e8f0 0%, #cbd5e1 100%);
   cursor: not-allowed;
+  box-shadow: none;
 }
 
 .test-button {
-  background: #ffc107;
-  color: #000;
+  background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+  color: white;
   border: none;
-  padding: 10px 20px;
-  border-radius: 4px;
-  font-size: 16px;
+  padding: 12px 28px;
+  border-radius: 10px;
+  font-size: 15px;
+  font-weight: 600;
   cursor: pointer;
-  transition: background 0.3s;
+  transition: all 0.2s ease;
+  box-shadow: 0 4px 6px -1px rgba(245, 158, 11, 0.25), 0 2px 4px -1px rgba(245, 158, 11, 0.15);
 }
 
 .test-button:hover:not(:disabled) {
-  background: #e0a800;
+  transform: translateY(-1px);
+  box-shadow: 0 10px 15px -3px rgba(245, 158, 11, 0.3), 0 4px 6px -2px rgba(245, 158, 11, 0.2);
 }
 
 .test-button:disabled {
-  background: #ccc;
+  background: linear-gradient(135deg, #e2e8f0 0%, #cbd5e1 100%);
   cursor: not-allowed;
-}
-
-.ftp-files {
-  background: #f8f9fa;
-  padding: 15px;
-  border-radius: 4px;
-  margin: 20px 0;
-}
-
-.ftp-files h3 {
-  margin-top: 0;
-  color: #333;
-}
-
-.ftp-files ul {
-  list-style: none;
-  padding: 0;
-}
-
-.ftp-files li {
-  padding: 5px 0;
-  color: #666;
-  font-family: monospace;
+  box-shadow: none;
 }
 
 .progress {
-  margin: 20px 0;
+  margin: 32px 0;
+  background: white;
+  padding: 24px;
+  border-radius: 12px;
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
 }
 
 .progress-bar {
   width: 100%;
-  height: 20px;
-  background: #f0f0f0;
-  border-radius: 10px;
+  height: 8px;
+  background: #e2e8f0;
+  border-radius: 999px;
   overflow: hidden;
+  position: relative;
 }
 
 .progress-fill {
   height: 100%;
-  background: #28a745;
-  transition: width 0.3s;
+  background: linear-gradient(90deg, #3b82f6 0%, #8b5cf6 100%);
+  transition: width 0.3s ease;
+  border-radius: 999px;
+  position: relative;
+  overflow: hidden;
+}
+
+.progress-fill::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  right: 0;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(255, 255, 255, 0.3),
+    transparent
+  );
+  animation: shimmer 1.5s infinite;
+}
+
+@keyframes shimmer {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(100%);
+  }
 }
 
 .progress p {
-  margin-top: 10px;
-  color: #666;
+  margin-top: 16px;
+  color: #64748b;
+  font-size: 14px;
+  font-weight: 500;
+  text-align: center;
 }
 
 .report-table {
-  overflow-x: auto;
+  background: white;
+  border-radius: 16px;
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+  overflow: hidden;
+  margin-top: 32px;
 }
 
 table {
   width: 100%;
   border-collapse: collapse;
-  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-}
-
-th, td {
-  padding: 12px;
-  text-align: left;
-  border-bottom: 1px solid #ddd;
 }
 
 th {
-  background: #f8f9fa;
-  font-weight: bold;
-  color: #333;
+  padding: 16px 20px;
+  text-align: left;
+  background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
+  font-weight: 600;
+  color: #475569;
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+td {
+  padding: 16px 20px;
+  text-align: left;
+  border-bottom: 1px solid #f1f5f9;
+  color: #334155;
+  font-size: 14px;
 }
 
 .city-row {
-  background: #e8f0fe;
+  background: linear-gradient(135deg, #eff6ff 0%, #e0f2fe 100%);
   cursor: pointer;
-  transition: background 0.2s;
+  transition: all 0.2s ease;
+  position: relative;
 }
 
 .city-row:hover {
-  background: #d2e3fc;
+  background: linear-gradient(135deg, #dbeafe 0%, #bfdbfe 100%);
+  box-shadow: inset 0 0 0 1px rgba(59, 130, 246, 0.1);
+}
+
+.city-row td {
+  font-weight: 600;
+  color: #1e40af;
+  border-bottom: 1px solid #cbd5e1;
 }
 
 .city-name {
-  font-weight: bold;
-  color: #1a73e8;
+  font-size: 15px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .shop-row {
-  background: #fff;
+  background: #ffffff;
+  transition: all 0.15s ease;
 }
 
 .shop-row:hover {
-  background: #f8f9fa;
+  background: #fafbfc;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.04);
 }
 
 .shop-name {
-  padding-left: 30px !important;
-  color: #5f6368;
+  padding-left: 48px !important;
+  color: #64748b;
+  font-size: 14px;
+  position: relative;
+}
+
+.shop-name::before {
+  content: '';
+  position: absolute;
+  left: 24px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 16px;
+  height: 1px;
+  background: #cbd5e1;
 }
 
 .expand-icon {
   text-align: center;
-  width: 30px;
+  width: 40px;
   padding: 0 !important;
 }
 
 .toggle-icon {
-  display: inline-block;
-  font-size: 12px;
-  color: #5f6368;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  font-size: 10px;
+  color: #64748b;
   user-select: none;
+  background: rgba(241, 245, 249, 0.8);
+  border-radius: 6px;
+  transition: all 0.15s ease;
 }
 
-tr:hover {
-  background: #f5f5f5;
+.city-row:hover .toggle-icon {
+  background: rgba(219, 234, 254, 0.8);
+  color: #3b82f6;
 }
 
 tfoot td {
-  background: #e9ecef;
-  border-top: 2px solid #dee2e6;
+  background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
+  border-top: 2px solid #e2e8f0;
+  padding: 20px;
+  font-weight: 700;
+  color: #1e293b;
+  font-size: 15px;
 }
 
 .error {
-  background: #f8d7da;
-  color: #721c24;
-  padding: 15px;
+  background: linear-gradient(135deg, #fee2e2 0%, #fecaca 100%);
+  color: #991b1b;
+  padding: 16px 20px;
+  border-radius: 12px;
+  margin-top: 24px;
+  font-weight: 500;
+  font-size: 14px;
+  border: 1px solid #fca5a5;
+  box-shadow: 0 4px 6px -1px rgba(220, 38, 38, 0.1);
+}
+
+.ftp-files {
+  background: white;
+  padding: 24px;
+  border-radius: 12px;
+  margin: 24px 0;
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+}
+
+.ftp-files h3 {
+  margin: 0 0 16px 0;
+  color: #1e293b;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.ftp-files ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.ftp-files li {
+  padding: 8px 12px;
+  color: #64748b;
+  font-family: 'SF Mono', Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+  font-size: 13px;
+  background: #f8fafc;
+  margin-bottom: 4px;
+  border-radius: 6px;
+  transition: all 0.15s ease;
+}
+
+.ftp-files li:hover {
+  background: #e2e8f0;
+  color: #334155;
+}
+
+/* Анимация появления строк */
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.shop-row {
+  animation: fadeInUp 0.3s ease forwards;
+}
+
+/* Скроллбар для таблицы */
+.report-table {
+  overflow-x: auto;
+  scrollbar-width: thin;
+  scrollbar-color: #cbd5e1 #f1f5f9;
+}
+
+.report-table::-webkit-scrollbar {
+  height: 8px;
+}
+
+.report-table::-webkit-scrollbar-track {
+  background: #f1f5f9;
   border-radius: 4px;
-  margin-top: 20px;
+}
+
+.report-table::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 4px;
+}
+
+.report-table::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+/* Адаптивность */
+@media (max-width: 768px) {
+  .control-panel {
+    flex-direction: column;
+    gap: 16px;
+    padding: 20px;
+  }
+  
+  .date-selector {
+    flex-direction: column;
+    width: 100%;
+    min-width: auto;
+  }
+  
+  .date-selector input {
+    width: 100%;
+  }
+  
+  .load-button,
+  .check-button,
+  .batch-button,
+  .test-button {
+    width: 100%;
+  }
+  
+  table {
+    font-size: 13px;
+  }
+  
+  th, td {
+    padding: 12px 16px;
+  }
+  
+  .shop-name {
+    padding-left: 32px !important;
+  }
 }
 </style>
